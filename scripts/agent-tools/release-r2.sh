@@ -1,0 +1,181 @@
+#!/bin/bash
+# release-r2 —
+#
+# toolbox-script
+# format: v1
+# name: release-r2
+# summary: 一键发布 Android 包到 Cloudflare R2 自更新源：build --release → sha256 → 生成 updates/app-update.json → 上传 apk+清单（--dry-run 试跑）
+# trigger: manual
+# platform: unix
+# cat: deploy
+#
+# release-r2 — 一键发布到 Cloudflare R2（应用内自更新源；模板通用件，自 shiguang 提取）
+#
+# 流程: 读 pubspec 版本 → flutter build apk --release（仅 arm64-v8a，注入 UPDATE_SOURCE_URL）
+#       → 算 sha256 → 生成 updates/app-update.json → 上传 apk+json 到 R2 公开域
+#
+# 前置:
+#   1) Cloudflare 后台对该 bucket 开启「公开访问」并绑定自定义域（如 update.example.com），
+#      确保 https://<域>/updates/... 可公开 GET（r2.dev 默认域有限速，不建议作生产更新源）
+#   2) 在仓库根 .env（参考 .env.example）或环境变量中配置 R2_* 与域名
+#
+# 用法: bash scripts/release-r2.sh [-n|--dry-run] [--commit]
+#   --commit   发布成功后把 updates/app-update.json 提交进仓库（便于追溯）
+set -euo pipefail
+
+JSON_ONLY=0
+case "${1:-}" in
+  --json) JSON_ONLY=1 ;;  # 预检语义：只验前置（node/R2_* 环境变量/pubspec 在位），不执行发布
+esac
+if [ "$JSON_ONLY" = 1 ]; then
+  msg=""; remedy=""; rc=0
+  command -v node >/dev/null 2>&1 || { msg="node 未安装"; remedy="安装 node 后重试"; rc=1; }
+  [ $rc -eq 0 ] && [ -f pubspec.yaml ] || { msg="pubspec.yaml 不在当前目录（须在仓库根跑）"; remedy="cd 仓库根后重试"; rc=1; }
+  [ $rc -eq 0 ] && { for v in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+      [ -n "${!v:-}" ] || { msg="缺环境变量 $v"; remedy="在 .env 或 shell 配置 R2_* 凭证"; rc=1; break; }; done; }
+  [ $rc -eq 0 ] && msg="预检通过：node/凭证/pubspec 就绪"
+  if [ $rc -eq 0 ]; then printf '{"status":"OK","severity":"info","message":"%s"}\n' "$msg"
+  else printf '{"status":"FAIL","severity":"error","message":"%s","remedy":"%s"}\n' "$msg" "$remedy"; fi
+  exit $rc
+fi
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+# 加载本地 .env：仓库根优先，回退 scripts/.env；均不存在则仅用环境变量
+if [ -f .env ]; then
+  source .env
+elif [ -f scripts/.env ]; then
+  source scripts/.env
+fi
+
+# ---- 可配置项（环境变量优先）----
+R2_ACCOUNT_ID="${R2_ACCOUNT_ID:-}"
+R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
+R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
+R2_BUCKET="${R2_BUCKET:-app-updates}"
+R2_PUBLIC_DOMAIN="${R2_PUBLIC_DOMAIN:-}"   # 自定义域，如 update.example.com（不含 https://）
+REMOTE_PREFIX="${REMOTE_PREFIX:-updates}"   # R2 内对象前缀（对应 App 更新源子目录）
+CHANGELOG="${CHANGELOG:-}"                  # 留空则取最近一条 git commit 信息
+
+# 导出给 upload-r2.mjs 子进程读取
+export R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET
+
+DRY_RUN=0
+DO_COMMIT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) DRY_RUN=1 ;;
+    --commit) DO_COMMIT=1 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    *) echo "未知参数: $1"; exit 2 ;;
+  esac
+  shift
+done
+
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
+export PATH="$HOME/flutter/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+# ---- 校验 ----
+missing=()
+[ -z "$R2_ACCOUNT_ID" ] && missing+=(R2_ACCOUNT_ID)
+[ -z "$R2_ACCESS_KEY_ID" ] && missing+=(R2_ACCESS_KEY_ID)
+[ -z "$R2_SECRET_ACCESS_KEY" ] && missing+=(R2_SECRET_ACCESS_KEY)
+[ -z "$R2_PUBLIC_DOMAIN" ] && missing+=(R2_PUBLIC_DOMAIN)
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "FAIL: 缺少 R2 配置: ${missing[*]}"
+  echo "      在仓库根 .env 或环境变量中设置（参考 .env.example）"
+  exit 1
+fi
+command -v node >/dev/null 2>&1 || { echo "FAIL: 需要 node（本机应已具备）"; exit 1; }
+command -v flutter >/dev/null 2>&1 || command -v "$HOME/flutter/bin/flutter" >/dev/null 2>&1 || { echo "FAIL: flutter 不可用"; exit 1; }
+
+# ---- 版本 ----
+VERSION_LINE="$(grep -m1 '^version:' pubspec.yaml)"
+VERSION_NAME="$(echo "$VERSION_LINE" | sed -E 's/.*:\s*([0-9.]+)\+.*/\1/')"
+VERSION_CODE="$(echo "$VERSION_LINE" | sed -E 's/.*\+([0-9]+).*/\1/')"
+# 应用包名：从 gradle 取，作为串包防御写入清单（缺失时留空，客户端宽容跳过）
+APP_ID="$(grep -m1 'applicationId' android/app/build.gradle.kts | sed -E 's/.*applicationId[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+[ -z "$CHANGELOG" ] && CHANGELOG="$(git log -1 --pretty=%s 2>/dev/null || echo '')"
+# 转义 json 字符串中的反斜杠与双引号
+CHANGELOG_ESC="${CHANGELOG//\\/\\\\}"
+CHANGELOG_ESC="${CHANGELOG_ESC//\"/\\\"}"
+
+APK="build/app/outputs/flutter-apk/app-arm64-v8a-release.apk"
+PUBLIC_BASE="https://${R2_PUBLIC_DOMAIN}"
+# APK 用版本化 key（不可变对象）：固定 key 会被公开域 CDN 启发式缓存串版
+# （2026-10-15 实测：28021 上传后公开域仍返回 28020 旧字节，客户端 sha256 校验失败）
+APK_KEY="${REMOTE_PREFIX}/app-${VERSION_CODE}.apk"
+APK_URL="${PUBLIC_BASE}/${APK_KEY}"
+SRC_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}"
+
+echo "版本: v${VERSION_NAME} (build ${VERSION_CODE})"
+echo "更新源 URL（填 App 更新页）: ${SRC_URL}"
+
+if [ "$DRY_RUN" = 1 ]; then
+  echo "[dry-run] 将执行:"
+  echo "  flutter pub get"
+  echo "  flutter analyze"
+  echo "  flutter build apk --release --split-per-abi --target-platform android-arm64 -P force-version-code-ignoring-abi=true --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\""
+  echo "  sha256sum $APK"
+  echo "  生成 updates/app-update.json (apkUrl=$APK_URL)"
+  echo "  node scripts/upload-r2.mjs $APK $APK_KEY application/vnd.android.package-archive"
+  echo "  node scripts/upload-r2.mjs updates/app-update.json $REMOTE_PREFIX/app-update.json application/json no-cache"
+  exit 0
+fi
+
+# ---- 构建 ----
+flutter pub get
+flutter analyze
+flutter build apk --release --split-per-abi --target-platform android-arm64 -P force-version-code-ignoring-abi=true --dart-define=UPDATE_SOURCE_URL="$SRC_URL"
+
+[ -f "$APK" ] || { echo "FAIL: 构建产物不存在: $APK"; exit 1; }
+SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
+
+# ---- 生成清单 ----
+mkdir -p updates
+cat > updates/app-update.json <<EOF
+{
+  "versionCode": ${VERSION_CODE},
+  "versionName": "${VERSION_NAME}",
+  "applicationId": "${APP_ID}",
+  "apkUrl": "${APK_URL}",
+  "sha256": "${SHA}",
+  "changelog": "${CHANGELOG_ESC}"
+}
+EOF
+echo "清单已生成: updates/app-update.json"
+
+# ---- 上传（零依赖 Node 脚本，AWS SigV4 直传 R2）----
+# --no-network-family-autoselection：Node 22 Happy Eyeballs 每次连接尝试默认 250ms 上限，
+# 本机到 Cloudflare RTT ~300ms 时 fetch 必超时；关闭竞速后按解析序直连（2026-10-07 实测）
+NODE_UP=(node --no-network-family-autoselection --dns-result-order=ipv4first)
+# APK 版本化 key（不可变，CDN 缓存无害）；清单固定 key 每次「检查更新」都 GET，
+# 必须 no-cache 强制回源重校验（2026-10-15 CDN 串版事故后加）
+echo "上传 APK → s3://$R2_BUCKET/$APK_KEY"
+"${NODE_UP[@]}" scripts/upload-r2.mjs "$APK" "$APK_KEY" "application/vnd.android.package-archive"
+echo "上传清单 → s3://$R2_BUCKET/$REMOTE_PREFIX/app-update.json"
+"${NODE_UP[@]}" scripts/upload-r2.mjs updates/app-update.json "$REMOTE_PREFIX/app-update.json" "application/json" "no-cache"
+
+# 新 APK 上传成功后清理旧版本 APK（版本化 key 不可变，旧对象只能删除；避免桶里堆积旧包被 CDN/直链命中）
+# 先传新后删旧：若删完新包传失败，桶里至少还留着上一个可用版本，客户端不至于拉空
+echo "清理旧版本 APK（保留 ${APK_KEY}）"
+OLD_KEYS="$("${NODE_UP[@]}" scripts/upload-r2.mjs --list "${REMOTE_PREFIX}/" | grep -E "^${REMOTE_PREFIX}/app-[0-9]+\.apk$" || true)"
+for k in $OLD_KEYS; do
+  if [ "$k" != "$APK_KEY" ]; then
+    "${NODE_UP[@]}" scripts/upload-r2.mjs --delete "$k"
+  fi
+done
+# 旧固定路径同步（2026-10-15）：28019 及更早的包把无前缀路径编进了 UPDATE_SOURCE_URL，
+# 浏览器直链也指向旧固定 key；不同步则老客户端/直链永远拿旧版。
+echo "同步旧固定路径（无前缀清单 + app-release.apk）"
+"${NODE_UP[@]}" scripts/upload-r2.mjs updates/app-update.json updates/app-update.json "application/json" "no-cache"
+"${NODE_UP[@]}" scripts/upload-r2.mjs "$APK" updates/app-release.apk "application/vnd.android.package-archive" "no-cache"
+
+echo "OK: 发布完成"
+echo "  更新源 URL（App 更新页填写）: ${SRC_URL}"
+echo "  APK 公开地址: ${APK_URL}"
+if [ "$DO_COMMIT" = 1 ]; then
+  git add updates/app-update.json
+  git commit -m "chore: release v${VERSION_NAME} (${VERSION_CODE})" && echo "已提交清单"
+fi
