@@ -2,10 +2,11 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
-/// 系统 PackageInstaller 会话通道（原生侧实现，见 android MainActivity.kt）。
+/// 系统 PackageInstaller 会话通道（**模板未带原生实现**——启用应用内自更新时，
+/// 宿主在 Android 侧注册本通道并实现下列三方法）。
 /// 用会话 API 直接读本地 APK 写入安装会话，绕开 ACTION_VIEW + FileProvider 的
 /// 跨应用 URI 授权在 Android 14+ 上不稳定导致「软件包无效」的坑。
-const _installChannel = MethodChannel('app.shiguang/installer');
+const _installChannel = MethodChannel('app/installer');
 
 /// 本应用是否已获「安装未知应用」授权（Android 14+ 自更新前置）。
 /// 非 Android 返回 true（桌面无此门槛）。

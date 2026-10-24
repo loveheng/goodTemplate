@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 桥接端到端自检（自拾贝原样搬运）：mock 一个 MCP HTTP 上游，拉起 stdio-bridge.mjs，
+// 桥接端到端自检：mock 一个 MCP HTTP 上游，拉起 stdio-bridge.mjs，
 // 从 stdin 发 initialize / tools/list / tools/call，断言响应与 session/token 透传。
 // 用法：node mcp-bridge/e2e-check.mjs   （exit 0 = 通过）
 import { spawn } from 'node:child_process';

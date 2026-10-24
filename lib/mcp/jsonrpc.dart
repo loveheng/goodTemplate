@@ -1,4 +1,4 @@
-/// JSON-RPC 2.0 / MCP 协议常量与小工具（自拾贝原样搬运，schedule-app.md §12）。
+/// JSON-RPC 2.0 / MCP 协议常量与小工具。
 /// 参考：MCP 规范 2025-06-18（Streamable HTTP），兼容 2025-03-26。
 class McpProtocol {
   static const latestVersion = '2025-06-18';

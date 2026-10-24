@@ -1,5 +1,5 @@
 #!/bin/bash
-# bump-version — pubspec.yaml 版本号更新脚本（模板通用件，自 shiguang 提取）
+# bump-version — pubspec.yaml 版本号更新脚本
 #
 # toolbox-script
 # format: v1

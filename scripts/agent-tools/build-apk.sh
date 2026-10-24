@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-apk — Android 编译脚本（模板通用件，自 shiguang 提取）（默认 debug 包，--release release 分包，--abi 指定平台）
+# build-apk — Android 编译脚本（默认 debug 包，--release release 分包，--abi 指定平台）
 #
 # toolbox-script
 # format: v1

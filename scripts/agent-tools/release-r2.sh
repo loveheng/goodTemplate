@@ -9,7 +9,7 @@
 # platform: unix
 # cat: deploy
 #
-# release-r2 — 一键发布到 Cloudflare R2（应用内自更新源；模板通用件，自 shiguang 提取）
+# release-r2 — 一键发布到 Cloudflare R2（应用内自更新源）
 #
 # 流程: 读 pubspec 版本 → flutter build apk --release（仅 arm64-v8a，注入 UPDATE_SOURCE_URL）
 #       → 算 sha256 → 生成 updates/app-update.json → 上传 apk+json 到 R2 公开域
@@ -19,7 +19,7 @@
 #      确保 https://<域>/updates/... 可公开 GET（r2.dev 默认域有限速，不建议作生产更新源）
 #   2) 在仓库根 .env（参考 .env.example）或环境变量中配置 R2_* 与域名
 #
-# 用法: bash scripts/release-r2.sh [-n|--dry-run] [--commit]
+# 用法: bash scripts/agent-tools/release-r2.sh [-n|--dry-run] [--commit]
 #   --commit   发布成功后把 updates/app-update.json 提交进仓库（便于追溯）
 set -euo pipefail
 
@@ -39,14 +39,14 @@ if [ "$JSON_ONLY" = 1 ]; then
   exit $rc
 fi
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# 加载本地 .env：仓库根优先，回退 scripts/.env；均不存在则仅用环境变量
+# 加载本地 .env：仓库根优先，回退脚本同目录 .env；均不存在则仅用环境变量
 if [ -f .env ]; then
   source .env
-elif [ -f scripts/.env ]; then
-  source scripts/.env
+elif [ -f scripts/agent-tools/.env ]; then
+  source scripts/agent-tools/.env
 fi
 
 # ---- 可配置项（环境变量优先）----
@@ -119,8 +119,8 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  flutter build apk --release --split-per-abi --target-platform android-arm64 -P force-version-code-ignoring-abi=true --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\""
   echo "  sha256sum $APK"
   echo "  生成 updates/app-update.json (apkUrl=$APK_URL)"
-  echo "  node scripts/upload-r2.mjs $APK $APK_KEY application/vnd.android.package-archive"
-  echo "  node scripts/upload-r2.mjs updates/app-update.json $REMOTE_PREFIX/app-update.json application/json no-cache"
+  echo "  node scripts/agent-tools/upload-r2.mjs $APK $APK_KEY application/vnd.android.package-archive"
+  echo "  node scripts/agent-tools/upload-r2.mjs updates/app-update.json $REMOTE_PREFIX/app-update.json application/json no-cache"
   exit 0
 fi
 
@@ -153,24 +153,20 @@ NODE_UP=(node --no-network-family-autoselection --dns-result-order=ipv4first)
 # APK 版本化 key（不可变，CDN 缓存无害）；清单固定 key 每次「检查更新」都 GET，
 # 必须 no-cache 强制回源重校验（2026-10-15 CDN 串版事故后加）
 echo "上传 APK → s3://$R2_BUCKET/$APK_KEY"
-"${NODE_UP[@]}" scripts/upload-r2.mjs "$APK" "$APK_KEY" "application/vnd.android.package-archive"
+"${NODE_UP[@]}" scripts/agent-tools/upload-r2.mjs "$APK" "$APK_KEY" "application/vnd.android.package-archive"
 echo "上传清单 → s3://$R2_BUCKET/$REMOTE_PREFIX/app-update.json"
-"${NODE_UP[@]}" scripts/upload-r2.mjs updates/app-update.json "$REMOTE_PREFIX/app-update.json" "application/json" "no-cache"
+"${NODE_UP[@]}" scripts/agent-tools/upload-r2.mjs updates/app-update.json "$REMOTE_PREFIX/app-update.json" "application/json" "no-cache"
 
 # 新 APK 上传成功后清理旧版本 APK（版本化 key 不可变，旧对象只能删除；避免桶里堆积旧包被 CDN/直链命中）
 # 先传新后删旧：若删完新包传失败，桶里至少还留着上一个可用版本，客户端不至于拉空
+# （清理范围限定在 $REMOTE_PREFIX/ 内——多 app 共桶时各占各前缀，互不误删）
 echo "清理旧版本 APK（保留 ${APK_KEY}）"
-OLD_KEYS="$("${NODE_UP[@]}" scripts/upload-r2.mjs --list "${REMOTE_PREFIX}/" | grep -E "^${REMOTE_PREFIX}/app-[0-9]+\.apk$" || true)"
+OLD_KEYS="$("${NODE_UP[@]}" scripts/agent-tools/upload-r2.mjs --list "${REMOTE_PREFIX}/" | grep -E "^${REMOTE_PREFIX}/app-[0-9]+\.apk$" || true)"
 for k in $OLD_KEYS; do
   if [ "$k" != "$APK_KEY" ]; then
-    "${NODE_UP[@]}" scripts/upload-r2.mjs --delete "$k"
+    "${NODE_UP[@]}" scripts/agent-tools/upload-r2.mjs --delete "$k"
   fi
 done
-# 旧固定路径同步（2026-10-15）：28019 及更早的包把无前缀路径编进了 UPDATE_SOURCE_URL，
-# 浏览器直链也指向旧固定 key；不同步则老客户端/直链永远拿旧版。
-echo "同步旧固定路径（无前缀清单 + app-release.apk）"
-"${NODE_UP[@]}" scripts/upload-r2.mjs updates/app-update.json updates/app-update.json "application/json" "no-cache"
-"${NODE_UP[@]}" scripts/upload-r2.mjs "$APK" updates/app-release.apk "application/vnd.android.package-archive" "no-cache"
 
 echo "OK: 发布完成"
 echo "  更新源 URL（App 更新页填写）: ${SRC_URL}"

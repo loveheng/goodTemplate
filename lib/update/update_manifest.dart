@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-/// 远程下发的功能配置（随 shiguang-update.json 的 config 段）。
+/// 远程下发的功能配置（随 app-update.json 的 config 段）。
 class RemoteConfig {
   const RemoteConfig({
     this.announcement,
@@ -26,8 +26,8 @@ class RemoteConfig {
   final Map<String, Object?> flags;
 }
 
-/// 更新清单：应用内自更新 + 配置热更共用一份 shiguang-update.json。
-/// 托管格式见 docs/guide/self-update.md。
+/// 更新清单：应用内自更新 + 配置热更共用一份 app-update.json
+/// （发布侧由 scripts/agent-tools/release-r2.sh 生成并上传）。
 class UpdateManifest {
   const UpdateManifest({
     required this.versionCode,

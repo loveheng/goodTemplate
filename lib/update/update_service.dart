@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'update_manifest.dart';
 
 /// 自更新 + 配置热更服务：一个可配置的静态源（gitee/github raw、任意静态托管）
-/// 放一份 shiguang-update.json，app 检查/下载/校验全在这里完成。
+/// 放一份 app-update.json，app 检查/下载/校验全在这里完成。
 /// 编译期注入的默认更新源（构建时 --dart-define=UPDATE_SOURCE_URL=...）。
 /// 非空时，用户未手动配置即自动采用，实现「装上即可检查更新」。
 const String kDefaultUpdateSourceUrl =
@@ -21,7 +21,7 @@ class UpdateService {
   final SharedPreferences _prefs;
   final String defaultSourceUrl;
   static const _prefSourceUrl = 'update_source_url';
-  static const manifestFileName = 'shiguang-update.json';
+  static const manifestFileName = 'app-update.json';
 
   /// 当前更新源：优先用户手动保存值，否则回退编译期内置默认源。
   Future<String?> sourceUrl() async {

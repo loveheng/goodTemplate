@@ -1,5 +1,5 @@
-import 'dart:math';
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -7,38 +7,55 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import '../mcp/mcp_server.dart';
 import '../mcp/settings_kv.dart';
 import '../mcp/tool_face.dart';
-import 'http_transport.dart';
 import '../update/remote_config_store.dart';
 import 'foreground_task_init.dart';
+import 'http_transport.dart';
 
-/// MCP 服务总控（抄改自拾贝 mcp_controller，§12）：token 与开关持久化 + 内嵌 HTTP server。
+/// MCP 服务总控（模板件）：token 与开关持久化 + 内嵌 HTTP server + 事件稳定代理。
 ///
-/// 暴露面口径（2026-10-15 拍板，schedule-app §11「MCP 暴露面」行）：生产通道 =
-/// Binder 宿主进程内嵌入（mcp_binder_entrypoint，不经本控）；本控的 HTTP 服务
-/// 仅绑 127.0.0.1 回环供 adb reverse 内部调试——不广播 mDNS、不展示 LAN 地址。
-/// token/开关走 app_settings KV（`mcp_token`/`mcp_enabled` 为内部键，不经
-/// update_settings 命令白名单）；前台服务保活（Doze 下持 CPU 锁+Wi-Fi 锁，
-/// 见 foreground_task_init）。
+/// 暴露面口径：生产通道 = Binder 宿主进程内嵌入（mcp_binder_entrypoint，不经本控）；
+/// 本控的 HTTP 服务仅绑 127.0.0.1 回环供 adb reverse 内部调试——不广播 mDNS、
+/// 不展示 LAN 地址。token/开关走 KV（`mcp_token`/`mcp_enabled` 为内部键）；
+/// 前台服务保活（Doze 下持 CPU 锁+Wi-Fi 锁，见 foreground_task_init）。
 class McpController extends ChangeNotifier {
   McpController({required this.kv, required this.toolFaceFactory});
 
-  /// KV 持久化端口（拾光侧由 Repository 隐式实现，走 app_settings 表）。
+  /// KV 持久化端口（装配处传 SecretAwareKv：普通键持久化、凭证键分流安全存储）。
   final SettingsKv kv;
 
-  /// 工具面工厂（宿主装配业务工具面 + 天气等后端；内核不沾 Repository）。
+  /// 工具面工厂（经 tool_face_assembly.dart 单点收口；内核不沾业务）。
   final McpToolFace Function() toolFaceFactory;
 
-  /// AI 经 suggest_user_setting 推送的「建议用户改设置」广播通道（app UI 监听弹提示）。
+  /// 「建议用户改设置」广播通道（app UI 监听弹提示，入口见 [pushSuggestion]）。
   final StreamController<Map<String, Object?>> _suggestionController =
       StreamController<Map<String, Object?>>.broadcast();
   Stream<Map<String, Object?>> get suggestionStream => _suggestionController.stream;
 
+  /// 宿主侧推送「建议用户改设置」（App UI 监听 [suggestionStream] 弹提示）。
+  ///
+  /// 内核不按工具名嗅探业务语义——建议通道由宿主/工具面显式调用本方法，
+  /// 内核保持业务无关。
+  void pushSuggestion(Map<String, Object?> args) {
+    if (!_suggestionController.isClosed) _suggestionController.add(args);
+  }
+
   static const defaultPort = 8765;
 
-  /// app_settings 内部键（服务自身状态，非用户设置项）。
+  /// KV 内部键（服务自身状态，非用户设置项）。
   static const _keyToken = 'mcp_token';
   static const _keyEnabled = 'mcp_enabled';
-  static const _keyIdentityPrompt = 'identity_prompt';
+
+  /// 工具调用事件（代理内核 `McpServer.onCall`）——UI 侧订阅此流渲染实时调用流水。
+  ///
+  /// 本控**持有**该广播流并转发内核事件：内核 server 在 `enable()` 时才建、
+  /// `disable()` 时即毁，若直接把 `_server?.onCall` 抛给订阅者，订阅会随
+  /// server 重建而断流。故由本控做一层稳定代理（成对生命周期）。
+  final StreamController<McpCallEvent> _callEvents =
+      StreamController<McpCallEvent>.broadcast();
+  StreamSubscription<McpCallEvent>? _callEventSub;
+
+  /// 工具调用事件流（类型化对象，非文本信封）。
+  Stream<McpCallEvent> get callEvents => _callEvents.stream;
 
   McpServer? _server;
   HttpTransport? _transport;
@@ -82,15 +99,25 @@ class McpController extends ChangeNotifier {
   Future<String?> enable() async {
     _lastError = null;
     try {
-      // 前台服务保活（Doze 下 MCP 应答须持 CPU/Wi-Fi 锁，见 foreground_task_init）；
+      // 前台服务保活（Doze 下 MCP 应答须持 CPU/Wi-Fi 锁）；
       // VM 测试/平台未就绪时跳过，仅启 HTTP（fail-open，不阻断服务）。
       try {
         await ensureForegroundTaskInit();
-        await FlutterForegroundTask.startService(
-          serviceTypes: [ForegroundServiceTypes.dataSync],
-          notificationTitle: '拾光 · MCP 服务运行中',
-          notificationText: '仅本机回环（内部调试）；桌面先 adb reverse tcp:$defaultPort tcp:$defaultPort',
-        );
+        // startService **不阻塞装配链**：保活服务与 HTTP 就绪无依赖——页面先进，
+        // 服务后台补启；失败照旧 [DEGRADE] 透出，不静默。
+        unawaited(() async {
+          try {
+            await FlutterForegroundTask.startService(
+              serviceTypes: [ForegroundServiceTypes.dataSync],
+              notificationTitle: 'good_template · MCP 服务运行中',
+              notificationText:
+                  '仅本机回环（内部调试）；桌面先 adb reverse tcp:$defaultPort tcp:$defaultPort',
+            );
+          } catch (e) {
+            // DEGRADE: [fg_unavailable] 前台服务不可用（VM 测试/平台未就绪）——仅 HTTP 无保活
+            debugPrint('[DEGRADE][fg_unavailable] 前台服务未启动: $e');
+          }
+        }());
       } catch (e) {
         // DEGRADE: [fg_unavailable] 前台服务不可用（VM 测试/平台未就绪）——仅 HTTP 无保活
         debugPrint('[DEGRADE][fg_unavailable] 前台服务未启动: $e');
@@ -98,29 +125,18 @@ class McpController extends ChangeNotifier {
       _server ??= McpServer(
         toolFace: toolFaceFactory(),
         tokenProvider: () => _token,
-        // AI 经 suggest_user_setting 推送建议时，广播给 app UI 弹提示
-        onSuggestion: (args) {
-          if (!_suggestionController.isClosed) _suggestionController.add(args);
-        },
-        // 系统提示词热更入口：远程下发的 mcpInstructions 可覆盖内置政策精华；
-        // 用户自填身份画像（identity_prompt）始终拼接待尊重（即配即用）。
+        // 系统提示词热更入口：远程下发的 mcpInstructions 可覆盖内置政策精华。
+        // 真实 app 可在此拼接用户自填画像等业务段（即配即用）。
         instructionsProvider: () async {
-          final remote =
-              RemoteConfigStore.instance.current.mcpInstructions;
-          final base = remote != null && remote.trim().isNotEmpty
-              ? remote.trim()
-              : McpServer.builtinInstructions;
-          final prompt = await kv.settingsGet(_keyIdentityPrompt);
-          if (prompt != null && prompt.trim().isNotEmpty) {
-            return '$base\n\n'
-                '【用户身份画像】（由用户在 app 内填写，描述其自身身份与处境，排程时务必尊重）\n$prompt';
-          }
-          return base;
+          final remote = RemoteConfigStore.instance.current.mcpInstructions;
+          if (remote != null && remote.trim().isNotEmpty) return remote.trim();
+          return McpServer.builtinInstructions;
         },
       );
       _transport ??= HttpTransport(server: _server!);
+      // 转发内核调用事件到本控的稳定流——server 重建时订阅不断流。
+      _callEventSub ??= _server!.onCall.listen(_callEvents.add);
       await _transport!.start(port: defaultPort);
-      // mDNS 广播随 2026-10-15 暴露面拍板退役（回环服务无需 LAN 发现，§11）。
       await kv.settingsSet({_keyEnabled: '1'});
     } catch (e) {
       _lastError = '$e';
@@ -143,7 +159,10 @@ class McpController extends ChangeNotifier {
       await _transport?.stop();
     } catch (_) {/* 服务可能已停止 */}
     _transport = null;
+    // 释放内核资源（事件流控制器）并断开转发订阅（成对生命周期）。
+    await _callEventSub?.cancel();
+    _callEventSub = null;
+    _server?.close();
     _server = null;
   }
-
 }

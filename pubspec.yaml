@@ -11,13 +11,13 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # MCP 内核：总控 KV/开关持久化 + 远程配置热更（自 shiguang update_kit 提取）
+  # MCP 内核：总控 KV/开关持久化 + 远程配置热更
   shared_preferences: ^2.5.5
   path_provider: ^2.1.6
   package_info_plus: ^10.2.1
   crypto: ^3.0.7
 
-  # 前台服务保活（Doze 下 MCP 应答须持 CPU 键+Wi-Fi 键，拾贝/拾光实测踩坑件）
+  # 前台服务保活（Doze 下 MCP 应答须持 CPU 键+Wi-Fi 键，真机实测踩坑件）
   flutter_foreground_task: ^11.0.3
 
 dev_dependencies:

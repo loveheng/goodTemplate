@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // upload-r2.mjs — 零依赖上传/列出/删除 Cloudflare R2 对象（AWS SigV4，region=auto）
-// 用法: node scripts/upload-r2.mjs <localFile> <remoteKey> [contentType] [cacheControl]
-//       node scripts/upload-r2.mjs --list <prefix>          列出对象 key（逐行输出）
-//       node scripts/upload-r2.mjs --delete <remoteKey>     删除单个对象
+// 用法: node scripts/agent-tools/upload-r2.mjs <localFile> <remoteKey> [contentType] [cacheControl]
+//       node scripts/agent-tools/upload-r2.mjs --list <prefix>          列出对象 key（逐行输出）
+//       node scripts/agent-tools/upload-r2.mjs --delete <remoteKey>     删除单个对象
 // 凭证/桶从环境变量读取: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET
 import { readFileSync } from 'node:fs';
 import { createHash, createHmac } from 'node:crypto';
@@ -13,9 +13,9 @@ const MODE = arg1 === '--list' ? 'list' : arg1 === '--delete' ? 'delete' : 'put'
 const remoteKey = arg2;
 if (!remoteKey) {
   console.error(
-    '用法: node scripts/upload-r2.mjs <localFile> <remoteKey> [contentType] [cacheControl]\n' +
-      '      node scripts/upload-r2.mjs --list <prefix>\n' +
-      '      node scripts/upload-r2.mjs --delete <remoteKey>'
+    '用法: node scripts/agent-tools/upload-r2.mjs <localFile> <remoteKey> [contentType] [cacheControl]\n' +
+      '      node scripts/agent-tools/upload-r2.mjs --list <prefix>\n' +
+      '      node scripts/agent-tools/upload-r2.mjs --delete <remoteKey>'
   );
   process.exit(2);
 }

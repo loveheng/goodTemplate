@@ -46,3 +46,9 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# 本地凭证/环境配置（release-r2.sh 读取，勿提交）
+.env
+
+# ZCode 会话目录
+.zcode/

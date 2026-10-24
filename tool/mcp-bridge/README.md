@@ -9,8 +9,8 @@ stdio ↔ HTTP 直连：`--url http://127.0.0.1:8765/mcp --token <访问令牌>`
 ## relay-bridge.mjs（外网可达，轴 C 新增）
 
 stdio ↔ relay 中转：手机与桌面各持 relay 账号且**互为好友**，MCP 请求经 relay
-定向中转（契约 v0.1.8，`kind="mcp"`）。手机不在线即失败（-32002），与
-schedule-app.md:331「手机不在线 AI 失联」同口径。
+定向中转（契约 v0.1.8，`kind="mcp"`）。手机不在线即失败（-32002；既定口径：
+不排队不代答，失联如实报错）。
 
 ```bash
 # 1) 首跑（不带 --peer）打印本端 user_id——手机端加好友时用

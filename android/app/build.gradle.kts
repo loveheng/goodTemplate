@@ -19,7 +19,10 @@ android {
         applicationId = "com.goodhub.good_template"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // minSdk 基线 34（Android 14）：插件接入 SDK（goodhub-mcp-plugin-core / goodhub-mcp-contract）
+        // 两模块 minSdk 均为 34，app 低于 34 会 manifest merger 直接失败；
+        // goodhub 本地插件链路（Binder 发现 / 随调随起 / 签名权限闸门）本身即 Android 14+ 基线。
+        minSdk = 34
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
@@ -36,6 +39,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+}
+
+dependencies {
+    // 插件接入 SDK（goodhub-mcp-plugin-core）：提供 GoodHubPluginService 基类 + @McpTool 注解
+    // + 反射派发器。零手写 AIDL——契约（:contract 模块）经 api 依赖传递引入。
+    // 本 app 业务逻辑在 Dart ⇒ McpBinderService 重写 handleJsonRpc 接管路由（见该文件头注释）。
+    // 版本与 contract_version 绑定，见 SDK 仓 VERSION 文件。
+    implementation("com.zzh.goodhub.mcp:goodhub-mcp-plugin-core:0.2.0")
 }
 
 kotlin {

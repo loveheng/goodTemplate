@@ -3,7 +3,7 @@
 //
 // 与 stdio-bridge.mjs 同形：stdin 每行一条 JSON-RPC → 经 relay 定向中转发给手机 →
 // 轮询收应答 → stdout 回写。区别：上游从「直连 HTTP :8765」换成「relay REST 中转」，
-// 外网可达（手机不在线即失败——schedule-app.md:331 已接受的口径）。
+// 外网可达（手机不在线即失败——既定口径：不排队不代答）。
 //
 // 鉴权双保险：relay 账号 JWT（本脚本登录获取）+ MCP x-api-key（--token，app「MCP 服务」页）
 // 前提：桌面 relay 账号与手机 relay 账号互为好友（relay 侧 ACL）。

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// shiguang MCP stdio bridge（自拾贝原样搬运，schedule-app.md §12；mDNS 自动发现 M4 新写，手动 IP 兜底）
-// 桌面端 MCP 客户端（stdio 传输，如 Claude Desktop / ZCode）↔ 手机端「拾光」内嵌 MCP 服务（Streamable HTTP）之间的桥。
+// shiguang MCP stdio bridge（mDNS 自动发现，手动 IP 兜底）
+// 桌面端 MCP 客户端（stdio 传输，如 Claude Desktop / ZCode）↔ 手机端本 app 内嵌 MCP 服务（Streamable HTTP）之间的桥。
 // 用法：
 //   node stdio-bridge.mjs [--url http://127.0.0.1:8765/mcp] [--token <X-Api-Key>]
 //   也可用环境变量 SHIGUANG_URL / SHIGUANG_TOKEN（优先级低于命令行参数）。
@@ -11,7 +11,7 @@ import process from 'node:process';
 const VERSION = '1.0.0';
 
 function help() {
-  console.log(`shiguang-mcp-bridge ${VERSION} — 桌面 stdio MCP 客户端 ↔ 手机「拾光」HTTP MCP 服务桥
+  console.log(`shiguang-mcp-bridge ${VERSION} — 桌面 stdio MCP 客户端 ↔ 手机本 app HTTP MCP 服务桥
 
 用法: node stdio-bridge.mjs [--url <u>] [--token <t>]
   --url    手机端 MCP 端点，默认 \${SHIGUANG_URL:-http://127.0.0.1:8765/mcp}
